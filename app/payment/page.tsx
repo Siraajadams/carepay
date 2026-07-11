@@ -16,13 +16,14 @@ export default function PaymentPage() {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        patientId,
-        referralId,
-        service: "Prescription Review",
-        amount: 250,
-        doctorFee: 150,
-        platformFee: 100,
-      }),
+  patientId,
+  referralId,
+  email,
+  service: "Prescription Review",
+  amount: 250,
+  doctorFee: 150,
+  platformFee: 100,
+}),
     });
 
     const data = await res.json();
