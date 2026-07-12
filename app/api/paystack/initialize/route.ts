@@ -11,6 +11,9 @@ type InitializePaymentBody = {
   platformFee?: number;
 };
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function POST(req: NextRequest) {
   let reference = "";
 
@@ -18,40 +21,63 @@ export async function POST(req: NextRequest) {
     const body = (await req.json()) as InitializePaymentBody;
 
     const patientIdentifier = String(body.patientId || "").trim();
+
     const referralCode = String(body.referralId || "")
       .trim()
       .toUpperCase();
+
     const email = String(body.email || "").trim().toLowerCase();
-    const service = String(body.service || "Prescription Review").trim();
+
+    const service = String(
+      body.service || "Prescription Review"
+    ).trim();
 
     const amount = Number(body.amount ?? 250);
     const doctorFee = Number(body.doctorFee ?? 150);
     const platformFee = Number(body.platformFee ?? 100);
 
+    /*
+     * Validate patient information
+     */
     if (!patientIdentifier) {
       return NextResponse.json(
-        { error: "Patient ID is required." },
+        {
+          success: false,
+          error: "Patient ID is required.",
+        },
         { status: 400 }
       );
     }
 
     if (!referralCode) {
       return NextResponse.json(
-        { error: "Referral code is required." },
+        {
+          success: false,
+          error: "Referral code is required.",
+        },
         { status: 400 }
       );
     }
 
     if (!email || !email.includes("@")) {
       return NextResponse.json(
-        { error: "A valid patient email address is required." },
+        {
+          success: false,
+          error: "A valid patient email address is required.",
+        },
         { status: 400 }
       );
     }
 
+    /*
+     * Validate payment amounts
+     */
     if (!Number.isFinite(amount) || amount <= 0) {
       return NextResponse.json(
-        { error: "A valid payment amount is required." },
+        {
+          success: false,
+          error: "A valid payment amount is required.",
+        },
         { status: 400 }
       );
     }
@@ -63,14 +89,29 @@ export async function POST(req: NextRequest) {
       platformFee < 0
     ) {
       return NextResponse.json(
-        { error: "The doctor and platform fees are invalid." },
+        {
+          success: false,
+          error: "The doctor and platform fees are invalid.",
+        },
         { status: 400 }
       );
     }
 
-    if (doctorFee + platformFee !== amount) {
+    /*
+     * Convert to cents before comparing.
+     * This avoids decimal rounding problems.
+     */
+    const amountInCents = Math.round(amount * 100);
+    const doctorFeeInCents = Math.round(doctorFee * 100);
+    const platformFeeInCents = Math.round(platformFee * 100);
+
+    if (
+      doctorFeeInCents + platformFeeInCents !==
+      amountInCents
+    ) {
       return NextResponse.json(
         {
+          success: false,
           error:
             "The doctor fee and platform fee must equal the total payment amount.",
         },
@@ -78,6 +119,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    /*
+     * Paystack configuration
+     */
     const paystackSecretKey =
       process.env.PAYSTACK_SECRET_KEY?.trim();
 
@@ -88,6 +132,7 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json(
         {
+          success: false,
           error:
             "PAYSTACK_SECRET_KEY is missing from the CarePay Vercel environment variables.",
         },
@@ -105,6 +150,7 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json(
         {
+          success: false,
           error:
             "Invalid Paystack secret key. It must start with sk_test_ or sk_live_.",
         },
@@ -112,19 +158,77 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    /*
+     * Production CarePay application URL.
+     *
+     * Vercel environment variable:
+     * NEXT_PUBLIC_APP_URL=https://carepay-olive.vercel.app
+     */
     const configuredAppUrl =
       process.env.NEXT_PUBLIC_APP_URL?.trim();
 
+    const fallbackAppUrl = "https://carepay-olive.vercel.app";
+
     const appUrl = (
-      configuredAppUrl || req.nextUrl.origin
-    ).replace(/\/$/, "");
+      configuredAppUrl || fallbackAppUrl
+    ).replace(/\/+$/, "");
+
+    let validatedAppUrl: URL;
+
+    try {
+      validatedAppUrl = new URL(appUrl);
+    } catch {
+      console.error(
+        "CAREPAY INITIALIZE: NEXT_PUBLIC_APP_URL is invalid:",
+        appUrl
+      );
+
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "NEXT_PUBLIC_APP_URL is invalid. It must be a complete URL such as https://carepay-olive.vercel.app.",
+        },
+        { status: 500 }
+      );
+    }
+
+    if (
+      validatedAppUrl.protocol !== "https:" &&
+      validatedAppUrl.hostname !== "localhost"
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "NEXT_PUBLIC_APP_URL must use HTTPS in production.",
+        },
+        { status: 500 }
+      );
+    }
 
     const supabase = getSupabaseAdmin();
 
+    /*
+     * Create a unique CarePay reference
+     */
     reference = `CP-${Date.now()}-${Math.random()
       .toString(36)
       .slice(2, 8)
       .toUpperCase()}`;
+
+    /*
+     * Paystack redirects here after payment.
+     *
+     * Final callback example:
+     * https://carepay-olive.vercel.app/payment/success?reference=CP-...
+     */
+    const callbackUrl = new URL(
+      "/payment/success",
+      `${appUrl}/`
+    );
+
+    callbackUrl.searchParams.set("reference", reference);
 
     console.log("CAREPAY INITIALIZE: Creating transaction", {
       reference,
@@ -135,8 +239,12 @@ export async function POST(req: NextRequest) {
       doctorFee,
       platformFee,
       email,
+      callbackUrl: callbackUrl.toString(),
     });
 
+    /*
+     * Save pending transaction before redirecting to Paystack
+     */
     const { data: transaction, error: insertError } =
       await supabase
         .from("carepay_transactions")
@@ -163,6 +271,7 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json(
         {
+          success: false,
           error: `CarePay transaction could not be created: ${insertError.message}`,
           stage: "database_insert",
           details: insertError.details || null,
@@ -178,9 +287,9 @@ export async function POST(req: NextRequest) {
       transaction
     );
 
-    const callbackUrl =
-      `${appUrl}/success?reference=${encodeURIComponent(reference)}`;
-
+    /*
+     * Initialize Paystack checkout
+     */
     const paystackRes = await fetch(
       "https://api.paystack.co/transaction/initialize",
       {
@@ -191,17 +300,19 @@ export async function POST(req: NextRequest) {
         },
         body: JSON.stringify({
           email,
-          amount: Math.round(amount * 100),
+          amount: amountInCents,
           reference,
           currency: "ZAR",
-          callback_url: callbackUrl,
+          callback_url: callbackUrl.toString(),
           metadata: {
             carepay_transaction_id: transaction.id,
             patient_identifier: patientIdentifier,
             referral_code: referralCode,
             service,
+            total_amount: amount,
             doctor_fee: doctorFee,
             platform_fee: platformFee,
+            callback_url: callbackUrl.toString(),
           },
         }),
         cache: "no-store",
@@ -234,13 +345,14 @@ export async function POST(req: NextRequest) {
 
       if (failureUpdateError) {
         console.error(
-          "CAREPAY INITIALIZE: Could not mark transaction failed:",
+          "CAREPAY INITIALIZE: Could not mark transaction as failed:",
           failureUpdateError
         );
       }
 
       return NextResponse.json(
         {
+          success: false,
           error:
             paystackData?.message ||
             "Paystack payment initialization failed.",
@@ -255,7 +367,10 @@ export async function POST(req: NextRequest) {
 
     console.log(
       "CAREPAY INITIALIZE: Paystack initialized successfully:",
-      reference
+      {
+        reference,
+        callbackUrl: callbackUrl.toString(),
+      }
     );
 
     return NextResponse.json({
@@ -265,7 +380,7 @@ export async function POST(req: NextRequest) {
       accessCode: paystackData.data.access_code,
       reference,
       transactionId: transaction.id,
-      callbackUrl,
+      callbackUrl: callbackUrl.toString(),
     });
   } catch (err: unknown) {
     const errorMessage =
@@ -277,6 +392,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(
       {
+        success: false,
         error: errorMessage,
         stage: "unexpected_error",
         reference: reference || null,
