@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 type VerificationResult = {
@@ -21,10 +21,6 @@ function PaymentSuccessContent() {
   useEffect(() => {
     async function verifyPayment() {
       try {
-        /*
-         * Paystack may add both reference and trxref.
-         * Use reference first, then trxref as a fallback.
-         */
         const reference =
           searchParams.get("reference") ||
           searchParams.get("trxref") ||
@@ -47,7 +43,26 @@ function PaymentSuccessContent() {
           }
         );
 
-        const data = (await response.json()) as VerificationResult;
+        const responseText = await response.text();
+
+        let data: VerificationResult;
+
+        try {
+          data = responseText
+            ? (JSON.parse(responseText) as VerificationResult)
+            : {
+                success: false,
+                error:
+                  "The payment verification server returned an empty response.",
+              };
+        } catch {
+          data = {
+            success: false,
+            error:
+              responseText ||
+              `Payment verification failed with status ${response.status}.`,
+          };
+        }
 
         if (!response.ok) {
           throw new Error(
@@ -59,7 +74,7 @@ function PaymentSuccessContent() {
 
         setResult({
           ...data,
-          reference,
+          reference: data.reference || reference,
         });
       } catch (error: unknown) {
         setResult({
@@ -76,6 +91,24 @@ function PaymentSuccessContent() {
 
     verifyPayment();
   }, [searchParams]);
+
+  const continueUrl = useMemo(() => {
+    const params = new URLSearchParams();
+
+    if (result?.referralCode) {
+      params.set("referral", result.referralCode);
+    }
+
+    if (result?.reference) {
+      params.set("reference", result.reference);
+    }
+
+    const query = params.toString();
+
+    return query
+      ? `https://symptomai.digital/payment-complete?${query}`
+      : "https://symptomai.digital/payment-complete";
+  }, [result?.referralCode, result?.reference]);
 
   return (
     <main
@@ -210,7 +243,7 @@ function PaymentSuccessContent() {
             )}
 
             <a
-              href="/"
+              href={continueUrl}
               style={{
                 display: "inline-block",
                 width: "100%",
@@ -223,7 +256,7 @@ function PaymentSuccessContent() {
                 fontWeight: 700,
               }}
             >
-              Continue
+              Continue to SymptomAI
             </a>
           </>
         ) : (
@@ -286,7 +319,7 @@ function PaymentSuccessContent() {
             )}
 
             <a
-              href="/"
+              href="https://symptomai.digital"
               style={{
                 display: "inline-block",
                 width: "100%",
@@ -299,7 +332,7 @@ function PaymentSuccessContent() {
                 fontWeight: 700,
               }}
             >
-              Return to CarePay
+              Return to SymptomAI
             </a>
           </>
         )}
