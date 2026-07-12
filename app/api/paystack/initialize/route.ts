@@ -17,8 +17,10 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as InitializePaymentBody;
 
-    const patientId = String(body.patientId || "").trim();
-    const referralId = String(body.referralId || "").trim();
+    const patientIdentifier = String(body.patientId || "").trim();
+    const referralCode = String(body.referralId || "")
+      .trim()
+      .toUpperCase();
     const email = String(body.email || "").trim().toLowerCase();
     const service = String(body.service || "Prescription Review").trim();
 
@@ -26,16 +28,16 @@ export async function POST(req: NextRequest) {
     const doctorFee = Number(body.doctorFee ?? 150);
     const platformFee = Number(body.platformFee ?? 100);
 
-    if (!patientId) {
+    if (!patientIdentifier) {
       return NextResponse.json(
         { error: "Patient ID is required." },
         { status: 400 }
       );
     }
 
-    if (!referralId) {
+    if (!referralCode) {
       return NextResponse.json(
-        { error: "Referral ID is required." },
+        { error: "Referral code is required." },
         { status: 400 }
       );
     }
@@ -126,8 +128,8 @@ export async function POST(req: NextRequest) {
 
     console.log("CAREPAY INITIALIZE: Creating transaction", {
       reference,
-      patientId,
-      referralId,
+      patientIdentifier,
+      referralCode,
       service,
       amount,
       doctorFee,
@@ -139,8 +141,10 @@ export async function POST(req: NextRequest) {
       await supabase
         .from("carepay_transactions")
         .insert({
-          patient_id: patientId,
-          referral_id: referralId,
+          patient_id: null,
+          patient_identifier: patientIdentifier,
+          referral_id: null,
+          referral_code: referralCode,
           service,
           amount,
           doctor_fee: doctorFee,
@@ -193,8 +197,8 @@ export async function POST(req: NextRequest) {
           callback_url: callbackUrl,
           metadata: {
             carepay_transaction_id: transaction.id,
-            patient_id: patientId,
-            referral_id: referralId,
+            patient_identifier: patientIdentifier,
+            referral_code: referralCode,
             service,
             doctor_fee: doctorFee,
             platform_fee: platformFee,
